@@ -55,15 +55,19 @@ namespace kinova_interface
 
     private:
         rclcpp::Subscription<Twist>::SharedPtr twist_sub_;
-        k_api::Base::BaseClient* base_;
-        k_api::BaseCyclic::BaseCyclicClient* base_cyclic_;
+        k_api::Base::BaseClient *base_;
+        k_api::BaseCyclic::BaseCyclicClient *base_cyclic_;
+
+        Twist::SharedPtr target_twist_;
+        rclcpp::Time last_twist_time_;
+        std::mutex twist_mutex_;
+        rclcpp::TimerBase::SharedPtr controller_timer_;
 
         bool move_to_home(k_api::Base::BaseClient *base);
         bool example_cartesian_action_movement(k_api::Base::BaseClient *base, k_api::BaseCyclic::BaseCyclicClient *base_cyclic);
         void twist_cb(const Twist::SharedPtr msg);
+        void spin_controller();
         std::function<void(k_api::Base::ActionNotification)> create_event_listener_by_promise(std::promise<k_api::Base::ActionEvent> &finish_promise);
-    
-    
     };
 
 } // namespace grid_generation

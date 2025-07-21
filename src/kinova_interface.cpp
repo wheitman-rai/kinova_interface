@@ -9,9 +9,8 @@ namespace kinova_interface
         RCLCPP_INFO(this->get_logger(), "Kinova Teleop Node Started");
 
         // Create API objects
-
         auto error_callback = [](k_api::KError err)
-        { cout << "_________ callback error _________" << err.toString(); };
+        { std::cout << "_________ callback error _________" << err.toString(); };
         auto transport = new k_api::TransportClientTcp();
         auto router = new k_api::RouterClient(transport, error_callback);
         RCLCPP_INFO(this->get_logger(), "Connecting...");
@@ -26,7 +25,6 @@ namespace kinova_interface
         create_session_info.set_password("admin");
         create_session_info.set_session_inactivity_timeout(60000);   // (milliseconds)
         create_session_info.set_connection_inactivity_timeout(2000); // (milliseconds)
-                                                                     // Session manager service wrapper
         std::cout << "Creating session for communication" << std::endl;
         auto session_manager = new k_api::SessionManager(router);
         session_manager->CreateSession(create_session_info);
@@ -36,14 +34,22 @@ namespace kinova_interface
         base_ = new k_api::Base::BaseClient(router);
         base_cyclic_ = new k_api::BaseCyclic::BaseCyclicClient(router);
 
-
         // Example core
         bool success = true;
         success &= move_to_home(base_);
         // success &= example_cartesian_action_movement(base, base_cyclic);
 
         // Subscribers
-        twist_sub_ = create_subscription<Twist>("/cmd_vel", 10, std::bind(&KinovaInterfaceNode::twist_cb, this, std::placeholders::_1));
+        twist_sub_ = create_subscription<Twist>(
+            "/cmd_vel", 10,
+            std::bind(&KinovaInterfaceNode::twist_cb, this, std::placeholders::_1));
+
+        // Timers: 100Hz = 10ms
+        controller_timer_ = this->create_wall_timer(
+            std::chrono::milliseconds(10),
+            std::bind(&KinovaInterfaceNode::spin_controller, this));
+
+        // Use multithreaded executor in launch file or main()
 
         RCLCPP_INFO(get_logger(), "Listening for Twist messages.");
     }
@@ -108,36 +114,61 @@ namespace kinova_interface
 
     void KinovaInterfaceNode::twist_cb(const Twist::SharedPtr msg)
     {
-        std::cout << "Starting Cartesian action movement ..." << std::endl;
+        std::lock_guard<std::mutex> lock(twist_mutex_);
+        target_twist_ = msg;
+        last_twist_time_ = this->now();
+    }
 
-        if (base_cyclic_ == nullptr)
+    void KinovaInterfaceNode::spin_controller()
+    {
+        // Control loop at 100Hz, use latest twist if not stale
+        if (base_cyclic_ == nullptr || base_ == nullptr)
         {
-            RCLCPP_ERROR(get_logger(), "base_cyclic_ is nullptr.");
+            RCLCPP_ERROR(get_logger(), "base_ or base_cyclic_ is nullptr.");
             return;
-        } else {
-            RCLCPP_INFO(get_logger(), "base_cyclic_ ok!");
+        }
+        else
+        {
+            RCLCPP_INFO(get_logger(), "Sending twist to robot");
         }
 
+        Twist::SharedPtr twist_copy;
+        rclcpp::Time twist_time;
+        {
+            std::lock_guard<std::mutex> lock(twist_mutex_);
+            twist_copy = target_twist_;
+            twist_time = last_twist_time_;
+        }
+
+        if (!twist_copy)
+        {
+            // No twist received yet
+            return;
+        }
+
+        // Check staleness (0.1s = 100ms)
+        auto now = this->now();
+        if ((now - twist_time).seconds() > 0.1)
+        {
+            // Stale, ignore
+            RCLCPP_WARN(get_logger(), "Stale, ignoring");
+            return;
+        }
+
+        // Use twist_copy for control
         auto feedback = base_cyclic_->RefreshFeedback();
         auto action = k_api::Base::Action();
         action.set_name("Example Cartesian action movement");
         action.set_application_data("");
 
-        RCLCPP_INFO(get_logger(), "Setting pose");
         auto constrained_pose = action.mutable_reach_pose();
         auto pose = constrained_pose->mutable_target_pose();
-        pose->set_x(feedback.base().tool_pose_x() + msg->linear.x); // x (meters)
-        pose->set_y(feedback.base().tool_pose_y() - msg->linear.y); // y (meters)
-        pose->set_z(feedback.base().tool_pose_z() - msg->linear.z); // z (meters)
-        pose->set_theta_x(feedback.base().tool_pose_theta_x());     // theta x (degrees)
-        pose->set_theta_y(feedback.base().tool_pose_theta_y());     // theta y (degrees)
-        pose->set_theta_z(feedback.base().tool_pose_theta_z());     // theta z (degrees)
-
-        // Connect to notification action topic
-        // (Reference alternative)
-        // See angular examples for Promise alternative
-
-        RCLCPP_INFO(get_logger(), "Pose set. Creating future.");
+        pose->set_x(feedback.base().tool_pose_x() + twist_copy->linear.x * 0.01); // x (meters)
+        pose->set_y(feedback.base().tool_pose_y() + twist_copy->linear.y * 0.01); // y (meters)
+        pose->set_z(feedback.base().tool_pose_z() + twist_copy->linear.z * 0.01); // z (meters)
+        pose->set_theta_x(feedback.base().tool_pose_theta_x());                   // theta x (degrees)
+        pose->set_theta_y(feedback.base().tool_pose_theta_y());                   // theta y (degrees)
+        pose->set_theta_z(feedback.base().tool_pose_theta_z());                   // theta z (degrees)
 
         std::promise<k_api::Base::ActionEvent> finish_promise;
         auto finish_future = finish_promise.get_future();
@@ -145,10 +176,7 @@ namespace kinova_interface
             create_event_listener_by_promise(finish_promise),
             k_api::Common::NotificationOptions());
 
-        std::cout << "Executing action" << std::endl;
         base_->ExecuteAction(action);
-
-        std::cout << "Waiting for movement to finish ..." << std::endl;
 
         const auto status = finish_future.wait_for(TIMEOUT_DURATION);
         base_->Unsubscribe(promise_notification_handle);
@@ -159,8 +187,6 @@ namespace kinova_interface
         }
 
         const auto promise_event = finish_future.get();
-
-        RCLCPP_INFO(get_logger(), "Cartesian movement complete");
         RCLCPP_INFO_STREAM(get_logger(), "Promise value: " << k_api::Base::ActionEvent_Name(promise_event));
     }
 
