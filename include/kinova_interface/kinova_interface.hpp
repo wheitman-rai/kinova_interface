@@ -58,6 +58,9 @@ namespace kinova_interface
         k_api::Base::BaseClient *base_;
         k_api::BaseCyclic::BaseCyclicClient *base_cyclic_;
 
+        k_api::Base::Twist *k_api_twist_;
+        k_api::Base::TwistCommand k_api_twist_command_;
+
         Twist::SharedPtr target_twist_;
         rclcpp::Time last_twist_time_;
         std::mutex twist_mutex_;

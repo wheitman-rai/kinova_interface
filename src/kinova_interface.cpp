@@ -49,7 +49,15 @@ namespace kinova_interface
             std::chrono::milliseconds(10),
             std::bind(&KinovaInterfaceNode::spin_controller, this));
 
-        // Use multithreaded executor in launch file or main()
+        // initialize kortex api twist commandd
+        {
+            k_api_twist_command_.set_reference_frame(k_api::Common::CARTESIAN_REFERENCE_FRAME_TOOL);
+            // command.set_duration = execute time (milliseconds) according to the api ->
+            // (not implemented yet)
+            // see: https://github.com/Kinovarobotics/kortex/blob/master/api_cpp/doc/markdown/messages/Base/TwistCommand.md
+            k_api_twist_command_.set_duration(0);
+            k_api_twist_ = k_api_twist_command_.mutable_twist();
+        }
 
         RCLCPP_INFO(get_logger(), "Listening for Twist messages.");
     }
@@ -170,24 +178,32 @@ namespace kinova_interface
         pose->set_theta_y(feedback.base().tool_pose_theta_y());                   // theta y (degrees)
         pose->set_theta_z(feedback.base().tool_pose_theta_z());                   // theta z (degrees)
 
-        std::promise<k_api::Base::ActionEvent> finish_promise;
-        auto finish_future = finish_promise.get_future();
-        auto promise_notification_handle = base_->OnNotificationActionTopic(
-            create_event_listener_by_promise(finish_promise),
-            k_api::Common::NotificationOptions());
+        k_api_twist_->set_linear_x(static_cast<float>(twist_copy->linear.x));
+        k_api_twist_->set_linear_y(static_cast<float>(twist_copy->linear.y));
+        k_api_twist_->set_linear_z(static_cast<float>(twist_copy->linear.z));
+        k_api_twist_->set_angular_x(static_cast<float>(twist_copy->angular.x));
+        k_api_twist_->set_angular_y(static_cast<float>(twist_copy->angular.y));
+        k_api_twist_->set_angular_z(static_cast<float>(twist_copy->angular.z));
+        base_->SendTwistCommand(k_api_twist_command_);
 
-        base_->ExecuteAction(action);
+        // std::promise<k_api::Base::ActionEvent> finish_promise;
+        // auto finish_future = finish_promise.get_future();
+        // auto promise_notification_handle = base_->OnNotificationActionTopic(
+        //     create_event_listener_by_promise(finish_promise),
+        //     k_api::Common::NotificationOptions());
 
-        const auto status = finish_future.wait_for(TIMEOUT_DURATION);
-        base_->Unsubscribe(promise_notification_handle);
+        // base_->ExecuteAction(action);
 
-        if (status != std::future_status::ready)
-        {
-            RCLCPP_ERROR(get_logger(), "Cartesian movement action timed out");
-        }
+        // const auto status = finish_future.wait_for(TIMEOUT_DURATION);
+        // base_->Unsubscribe(promise_notification_handle);
 
-        const auto promise_event = finish_future.get();
-        RCLCPP_INFO_STREAM(get_logger(), "Promise value: " << k_api::Base::ActionEvent_Name(promise_event));
+        // if (status != std::future_status::ready)
+        // {
+        //     RCLCPP_ERROR(get_logger(), "Cartesian movement action timed out");
+        // }
+
+        // const auto promise_event = finish_future.get();
+        // RCLCPP_INFO_STREAM(get_logger(), "Promise value: " << k_api::Base::ActionEvent_Name(promise_event));
     }
 
     bool KinovaInterfaceNode::example_cartesian_action_movement(k_api::Base::BaseClient *base, k_api::BaseCyclic::BaseCyclicClient *base_cyclic)
